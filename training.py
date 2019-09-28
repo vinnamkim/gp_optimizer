@@ -1,16 +1,11 @@
 import torch
-from torch.autograd import Variable
-import torchvision.transforms as transforms
-import torchvision.datasets as dsets
-import numpy as np
-from torch import optim
-from torch.nn import CrossEntropyLoss
 import torch.nn.functional as F
+from replay_memory import Transition
 
-from dqn import DQN
-from mlnn import MLNN
-from replay_memory import ReplayMemory, Transition
-
+def _clamp_params(net):
+    for param in net.parameters():
+        param.grad.data.clamp_(-1, 1)
+        
 def optimize_dqn(policy_net, target_net, replay_memory, optimizer, batch_size, gamma):
     if len(replay_memory) < batch_size:
         return
@@ -18,18 +13,21 @@ def optimize_dqn(policy_net, target_net, replay_memory, optimizer, batch_size, g
     transitions = replay_memory.sample(batch_size)
     
     batch = Transition(*zip(*transitions))
-
-    q_values = policy_net(batch.state).gather(1, batch.action)
-    expected_q_values = (target_net(batch.next_state).max(1)[0].detach() * gamma) + batch.reward
+    
+    state = torch.stack(batch.state)
+    action = torch.stack(batch.action).reshape([-1, 1])
+    next_state = torch.stack(batch.next_state)
+    reward = torch.stack(batch.reward)
+    
+    q_values = policy_net(state).gather(1, action.reshape([-1, 1])).squeeze()
+    #print(batch.reward)
+    expected_q_values = (target_net(next_state).max(1)[0].detach() * gamma) + reward
 
     loss = F.smooth_l1_loss(q_values, expected_q_values)
 
     optimizer.zero_grad()
     loss.backward()
-    
-    for param in policy_net.parameters():
-        param.grad.data.clamp_(-1, 1)
-    
+    _clamp_params(policy_net)
     optimizer.step()
     
-    return
+    return loss

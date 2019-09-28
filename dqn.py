@@ -10,7 +10,7 @@ class DQN(nn.Module):
             nn.BatchNorm1d(hidden_dims),
             nn.Linear(hidden_dims, output_dims),
             nn.ReLU(),
-            nn.BatchNorm1d(output_dims)
+            #nn.BatchNorm1d(output_dims)
         )
         for m in self.model:
             if isinstance(m, nn.Linear):
