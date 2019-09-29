@@ -9,6 +9,8 @@ EPS_START = 0.9
 EPS_END = 0.05
 EPS_DECAY = 200
 
+GAMMA = 0.999
+
 def _get_layer(input_dims, output_dims, device):
     return nn.Sequential(
         nn.Linear(input_dims, output_dims),
@@ -43,6 +45,7 @@ class MLNN(nn.Module):
 
         self.steps_done = 0
         self.init_variables()
+        self.device = device
 
     def init_variables(self):
         for m in self.named_modules():
@@ -51,7 +54,10 @@ class MLNN(nn.Module):
                 nn.init.constant_(m.bias, 0)
     
     def get_replays(self):
-        return self.replays
+        replays = []
+        for i in self.replays:
+            replays += self.replays[i]
+        return replays
     
     def get_eps_threshold(self):
         return EPS_END + (EPS_START - EPS_END) * \
@@ -63,16 +69,17 @@ class MLNN(nn.Module):
         else:
             eps_threshold = -1.0
 
-        self.replays = []
+        self.replays = {}
         
         outputs = self.start_layer(x)
+        
+        n_layers = len(self.layers)
 
-        for layers, batch_norm in zip(self.layers, self.batch_norms):
-            #print(outputs.shape)
-            actions = _get_action(dqn, outputs)
+        for i, layers, batch_norm in zip(range(n_layers), self.layers, self.batch_norms):
+            actions = _get_action(dqn, outputs).cpu()
             next_outputs = []
             
-            for j in range(len(actions)):
+            for j in range(len(outputs)):
                 state = outputs[j]
                 actions[j] = actions[j] if random.random() > eps_threshold else torch.tensor(random.randrange(len(layers)))
                 next_state = layers[actions[j]](state.reshape([1, -1]))
@@ -81,12 +88,13 @@ class MLNN(nn.Module):
             next_outputs = torch.stack(next_outputs).squeeze(1)
             next_outputs = batch_norm(next_outputs)
             
-            for i in range(len(outputs)):
-                state = outputs[i]
-                action = actions[i]
-                next_state = next_outputs[i]
-                self.replays.append(Transition(state, action, next_state, 0.))
-                
+            self.replays[i] = []
+            for j in range(len(outputs)):
+                state = outputs[j]
+                action = actions[j]
+                next_state = next_outputs[j]
+                self.replays[i].append(Transition(state, action, next_state, 0.))
+            
             #print(outputs.shape)
         
         outputs = self.end_layer(outputs)
@@ -95,13 +103,38 @@ class MLNN(nn.Module):
 
         return outputs
 
-    def update_replays(self, loss):
-        reward = (1 - loss.detach()).clamp(min=0.)
+    def update_replays(self, labels, loss, num_labels):
+        loss_reward = (1 - loss.detach()).clamp(min=0.)
+        
+        y_onehot = torch.IntTensor(len(labels), num_labels)
+        y_onehot.zero_()
+        y_onehot.scatter_(1, labels.cpu().reshape([-1, 1]), 1)
 
-        for i, replay in enumerate(self.replays):
-            self.replays[i] = Transition(
-                replay.state.detach(), 
-                replay.action, 
-                replay.next_state.detach(), 
-                reward
-            )
+        A = y_onehot.mm(y_onehot.transpose(0, 1))
+        
+        for i in reversed(sorted(self.replays.keys())):
+            B = torch.IntTensor(len(labels), num_labels)
+            B.zero_()
+            actions = torch.tensor(
+                [replay.action for replay in self.replays[i]], dtype=torch.long).reshape([-1, 1])
+            B.scatter_(1, actions, 1)
+            B = B.mm(B.transpose(0, 1))
+            
+            equal_reward = (A * B).float().mean(1)
+            diff_reward = ((1 - A) * (1 - B)).float().mean(1)
+            
+            if i == len(self.replays) - 1:
+                reward = loss_reward
+                gamma = 1.0
+            else:
+                reward = 0
+                gamma *= GAMMA
+
+            for j, replay in enumerate(self.replays[i]):
+                reward += gamma * (equal_reward[j] + diff_reward[j])
+                self.replays[i][j] = Transition(
+                    replay.state.detach(), 
+                    replay.action, 
+                    replay.next_state.detach(), 
+                    reward
+                )

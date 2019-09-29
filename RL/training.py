@@ -19,7 +19,7 @@ def optimize_dqn(policy_net, target_net, replay_memory, optimizer, batch_size, g
     state = torch.stack(batch.state)
     action = torch.stack(batch.action).reshape([-1, 1])
     next_state = torch.stack(batch.next_state)
-    reward = torch.stack(batch.reward)
+    reward = torch.stack(batch.reward).cuda()
     
     q_values = policy_net(state).gather(1, action.reshape([-1, 1]).cuda()).squeeze()
     #print(batch.reward)

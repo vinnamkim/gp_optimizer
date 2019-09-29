@@ -4,6 +4,7 @@ import torch
 from replay_memory import Transition
 import math
 import random
+import collections
 
 EPS_START = 0.9
 EPS_END = 0.05
@@ -42,10 +43,43 @@ class MLNN(nn.Module):
             self.batch_norms.append(
                 nn.BatchNorm1d(hidden_dims, hidden_dims).to(device)
             )
+        
+        self.enroll_layers()
 
         self.steps_done = 0
         self.init_variables()
         self.device = device
+
+    def enroll_layers(self):
+        for i, layers in enumerate(self.layers):
+            for j, layer in enumerate(layers):
+                setattr(self, "layer_{}_{}".format(i + 1, j + 1), layer)
+        
+        for i, batch_norm in enumerate(self.batch_norms):
+            setattr(self, "batch_norm_{}".format(i + 1), batch_norm)
+
+    # def parameters(self):
+    #     for p in self.start_layer.parameters():
+    #         yield p
+        
+    #     for p in self.end_layer.parameters():
+    #         yield p
+        
+    #     for layers in self.layers:
+    #         for layer in layers:
+    #             for p in layer.parameters():
+    #                 yield p
+
+    # def state_dict(self):
+    #     state_dict = collections.OrderedDict([])
+    #     state_dict.update(self.start_layer.state_dict())
+    #     state_dict.update(self.end_layer.state_dict())
+        
+    #     # for layers in self.layers:
+    #     #     for layer in layers:
+    #     #         state_dict.update(layer.state_dict())
+        
+    #     return state_dict
 
     def init_variables(self):
         for m in self.named_modules():
@@ -104,7 +138,7 @@ class MLNN(nn.Module):
         return outputs
 
     def update_replays(self, labels, loss, num_labels):
-        reward = (1 - loss.detach()).clamp(min=0.)
+        loss_reward = (1 - loss.detach()).clamp(min=0.)
         
         y_onehot = torch.IntTensor(len(labels), num_labels)
         y_onehot.zero_()
@@ -112,7 +146,7 @@ class MLNN(nn.Module):
 
         A = y_onehot.mm(y_onehot.transpose(0, 1))
         
-        for i in self.replays:
+        for i in reversed(sorted(self.replays.keys())):
             B = torch.IntTensor(len(labels), num_labels)
             B.zero_()
             actions = torch.tensor(
@@ -122,12 +156,19 @@ class MLNN(nn.Module):
             
             equal_reward = (A * B).float().mean(1)
             diff_reward = ((1 - A) * (1 - B)).float().mean(1)
+            
+            if i == len(self.replays) - 1:
+                reward = loss_reward
+                gamma = 1.0
+            else:
+                reward = 0
+                gamma *= GAMMA
 
             for j, replay in enumerate(self.replays[i]):
+                reward += gamma * (equal_reward[j] + diff_reward[j])
                 self.replays[i][j] = Transition(
                     replay.state.detach(), 
                     replay.action, 
                     replay.next_state.detach(), 
-                    reward + (equal_reward[j] + diff_reward[j])
+                    reward.cpu()
                 )
-
